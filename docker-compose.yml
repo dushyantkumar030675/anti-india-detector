@@ -1,70 +1,21 @@
-version: '3.9'
+# Use a specific version for stability
+FROM python:3.9-slim
 
-services:
-  db:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_DB: antiindia_db
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    ports:
-      - '5432:5432'
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user"]
-      interval: 5s
-      retries: 5
+# Install system dependencies for PostgreSQL and build tools
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - '6379:6379'
+WORKDIR /app
 
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms256m -Xmx256m
-    ports:
-      - '9200:9200'
-    volumes:
-      - es_data:/usr/share/elasticsearch/data
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
+# Copy requirements first to leverage Docker cache
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-  api:
-    build: ./backend
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
-    env_file: ./backend/.env
-    ports:
-      - '8000:8000'
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
+# Copy the rest of the application
+COPY . .
 
-  worker:
-    build: ./backend
-    command: python workers/analysis_worker.py
-    env_file: ./backend/.env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-
-  frontend:
-    build: ./frontend
-    ports:
-      - '5173:80'
-    depends_on:
-      - api
-
-volumes:
-  pg_data:
-  es_data:
+# Match the command defined in your docker-compose.yml
+# This ensures it listens on all interfaces (0.0.0.0) inside the container
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
