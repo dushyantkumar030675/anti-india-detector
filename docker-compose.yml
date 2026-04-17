@@ -11,6 +11,10 @@ services:
       - pg_data:/var/lib/postgresql/data
     ports:
       - '5432:5432'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user"]
+      interval: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -22,11 +26,15 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
     ports:
       - '9200:9200'
     volumes:
       - es_data:/usr/share/elasticsearch/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
 
   api:
     build: ./backend
@@ -35,16 +43,20 @@ services:
     ports:
       - '8000:8000'
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   worker:
     build: ./backend
     command: python workers/analysis_worker.py
     env_file: ./backend/.env
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   frontend:
     build: ./frontend
