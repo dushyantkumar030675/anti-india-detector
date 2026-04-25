@@ -7,9 +7,17 @@ from __future__ import annotations
 import re
 import structlog
 from langdetect import detect, LangDetectException
-from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
-import spacy
 from config.settings import get_settings
+
+try:
+    from transformers import pipeline
+except Exception:
+    pipeline = None
+
+try:
+    import spacy
+except Exception:
+    spacy = None
 
 log = structlog.get_logger()
 settings = get_settings()
@@ -38,7 +46,9 @@ _nlp = None  # spaCy
 
 def _load_models():
     global _hate_classifier, _sentiment_pipeline, _nlp
-    if _hate_classifier is None:
+    if pipeline is None:
+        log.warning("transformers not installed, using keyword NLP fallback")
+    elif _hate_classifier is None:
         log.info("Loading hate classifier model...")
         try:
             _hate_classifier = pipeline(
@@ -50,7 +60,7 @@ def _load_models():
         except Exception as e:
             log.warning("Could not load hate model, using keyword fallback", error=str(e))
 
-    if _sentiment_pipeline is None:
+    if pipeline is not None and _sentiment_pipeline is None:
         log.info("Loading sentiment model...")
         try:
             _sentiment_pipeline = pipeline(
@@ -62,7 +72,9 @@ def _load_models():
         except Exception as e:
             log.warning("Could not load sentiment model", error=str(e))
 
-    if _nlp is None:
+    if spacy is None:
+        log.warning("spaCy not installed, skipping NER")
+    elif _nlp is None:
         log.info("Loading spaCy model...")
         try:
             _nlp = spacy.load("en_core_web_sm")
