@@ -13,7 +13,7 @@ python-multipart==0.0.6
 
 # NLP / ML
 transformers==4.37.0
-torch==2.1.2
+torch==2.9.1
 spacy==3.7.2
 langdetect==1.0.9
 scikit-learn==1.4.0
