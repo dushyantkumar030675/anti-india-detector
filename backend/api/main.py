@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 import structlog
 import redis.asyncio as aioredis
-from fastapi import FastAPI, Depends, HTTPException, Security, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, Security, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field
@@ -18,7 +18,7 @@ from sqlalchemy import select, func, desc, and_
 from contextlib import asynccontextmanager
 
 from config.settings import get_settings
-from config.database import get_db, init_db
+from config.database import AsyncSessionLocal, get_db, init_db
 from models.models import Incident, SeverityLevel, ContentSource, ApiKey, TrendSnapshot
 from services.analyzers.nlp_analyzer import analyze_text
 from services.analyzers.coordination_analyzer import (
@@ -75,10 +75,26 @@ class AnalyzeResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await ensure_bootstrap_api_key()
     app.state.redis = await aioredis.from_url(settings.redis_url)
     log.info("API startup complete")
     yield
     await app.state.redis.close()
+
+
+async def ensure_bootstrap_api_key():
+    if not settings.bootstrap_api_key:
+        return
+
+    key_hash = hashlib.sha256(settings.bootstrap_api_key.encode()).hexdigest()
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(ApiKey).where(ApiKey.key_hash == key_hash))
+        if result.scalar_one_or_none():
+            return
+
+        db.add(ApiKey(name="bootstrap", key_hash=key_hash, is_active=True))
+        await db.commit()
+        log.info("Bootstrap API key created")
 
 
 app = FastAPI(
@@ -90,7 +106,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://yourdomain.com"],
+    allow_origins=settings.cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -213,21 +230,32 @@ async def list_incidents(
     _: ApiKey = Depends(verify_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    q = select(Incident).order_by(desc(Incident.created_at))
+    filters = []
     if severity:
-        q = q.where(Incident.severity == severity)
+        try:
+            filters.append(Incident.severity == SeverityLevel(severity))
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Invalid severity value: {severity}")
     if source:
-        q = q.where(Incident.source == source)
-    if min_score:
-        q = q.where(Incident.threat_score >= min_score)
+        try:
+            filters.append(Incident.source == ContentSource(source))
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Invalid source value: {source}")
+    if min_score > 0:
+        filters.append(Incident.threat_score >= min_score)
     if reviewed is not None:
-        q = q.where(Incident.reviewed == reviewed)
-    q = q.offset(offset).limit(limit)
-    result = await db.execute(q)
-    incidents = result.scalars().all()
+        filters.append(Incident.reviewed == reviewed)
 
-    count_q = select(func.count(Incident.id))
+    q = select(Incident)
+    if filters:
+        q = q.where(and_(*filters))
+
+    count_q = select(func.count()).select_from(q.subquery())
     total = (await db.execute(count_q)).scalar()
+
+    paginated_q = q.order_by(desc(Incident.created_at)).offset(offset).limit(limit)
+    result = await db.execute(paginated_q)
+    incidents = result.scalars().all()
     return {"total": total, "incidents": [i.__dict__ for i in incidents]}
 
 
@@ -312,22 +340,76 @@ async def get_trends(
     }
 
 
+@app.get("/api/v1/health/workers", status_code=200)
+async def check_worker_health(
+    request: Request,
+    response: Response,
+    _: ApiKey = Depends(verify_api_key),
+):
+    """
+    Checks the health of background workers by reading their last check-in time from Redis.
+    Returns a 503 status if any worker is considered unhealthy (hasn't checked in recently).
+    """
+    redis_client: aioredis.Redis = request.app.state.redis
+    worker_keys = [key async for key in redis_client.scan_iter("health:worker:*")]
+
+    if not worker_keys:
+        return {"status": "ok", "message": "No active workers found reporting health."}
+
+    statuses = []
+    overall_healthy = True
+    now = datetime.utcnow()
+    # A worker is unhealthy if it hasn't checked in for 5 minutes
+    unhealthy_threshold = timedelta(minutes=5)
+
+    for key in worker_keys:
+        last_seen_iso = await redis_client.get(key)
+        if not last_seen_iso:
+            continue
+
+        try:
+            last_seen = datetime.fromisoformat(last_seen_iso.decode("utf-8"))
+            delta = now - last_seen
+            is_healthy = delta < unhealthy_threshold
+
+            if not is_healthy:
+                overall_healthy = False
+
+            statuses.append({
+                "worker_id": key.decode("utf-8").split(":")[-1],
+                "last_seen_utc": last_seen.isoformat() + "Z",
+                "time_since_last_seen": f"{delta.total_seconds():.0f}s ago",
+                "is_healthy": is_healthy,
+            })
+        except (ValueError, TypeError):
+            log.warning("Could not parse health status for key", key=key.decode())
+            continue
+
+    if not overall_healthy:
+        response.status_code = 503  # Service Unavailable
+
+    return {
+        "overall_status": "healthy" if overall_healthy else "unhealthy",
+        "workers": sorted(statuses, key=lambda x: x["worker_id"]),
+    }
+
+
 @app.post("/api/v1/report")
 async def report_content(
     body: ReportRequest,
+    request: Request,
     _: ApiKey = Depends(verify_api_key),
-    db: AsyncSession = Depends(get_db),
 ):
-    payload = json.dumps({
+    redis_client: aioredis.Redis = request.app.state.redis
+    payload = {
         "source": body.source,
         "content_id": f"report:{uuid.uuid4().hex}",
         "text": body.text,
         "url": body.url,
         "notes": body.notes,
         "collected_at": datetime.utcnow().isoformat(),
-    })
-    # Push directly to analysis queue
-    # (In production, import redis and push to stream)
+    }
+    await redis_client.xadd("content:raw", {"data": json.dumps(payload)})
     return {"status": "queued", "message": "Content submitted for analysis"}
 
 

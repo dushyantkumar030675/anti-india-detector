@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from config.settings import get_settings
 from config.database import AsyncSessionLocal, init_db
+from config.logging import setup_logging
 from models.models import Incident, SeverityLevel, ContentSource
 from services.analyzers.nlp_analyzer import analyze_text
 from services.analyzers.coordination_analyzer import (
@@ -131,6 +132,7 @@ async def process_item(data: dict, redis_client: aioredis.Redis, db: AsyncSessio
 
 
 async def run_worker():
+    setup_logging()
     await init_db()
     redis_client = await aioredis.from_url(settings.redis_url)
 
@@ -163,12 +165,22 @@ async def run_worker():
                             await process_item(data, redis_client, db)
                             await redis_client.xack(STREAM_NAME, CONSUMER_GROUP, entry_id)
                         except Exception as e:
-                            log.error("Processing error", error=str(e), entry_id=entry_id)
+                            log.error("Processing error", error=str(e), entry_id=entry_id.decode())
 
         except Exception as e:
             log.error("Worker loop error", error=str(e))
             await asyncio.sleep(5)
+        finally:
+            # Always report health at the end of a cycle. This proves the worker
+            # is alive and the main loop is running.
+            try:
+                health_key = f"health:worker:{CONSUMER_NAME}"
+                # Set key with a 10-minute expiry. If the worker dies, the key will vanish.
+                await redis_client.set(health_key, datetime.utcnow().isoformat(), ex=600)
+            except Exception as e:
+                log.error("Failed to report health status", error=str(e))
 
 
 if __name__ == "__main__":
+    setup_logging()
     asyncio.run(run_worker())

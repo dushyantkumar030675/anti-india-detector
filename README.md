@@ -174,3 +174,42 @@ Scores range 0–100:
 ```bash
 docker-compose up --build
 ```
+
+---
+
+## Deploy Frontend on Vercel and Backend on Render
+
+### Render backend
+
+Use the root `render.yaml` blueprint to create:
+
+- `anti-india-api` FastAPI service
+- `anti-india-analysis-worker` background worker
+- Render PostgreSQL
+- Render Redis
+
+Set these Render environment values when prompted:
+
+```bash
+BACKEND_CORS_ORIGINS=https://your-vercel-app.vercel.app
+BOOTSTRAP_API_KEY=choose-a-long-random-key
+```
+
+After Render deploys, copy the API service URL, for example:
+
+```bash
+https://anti-india-api.onrender.com
+```
+
+### Vercel frontend
+
+Deploy this repository on Vercel. The root `vercel.json` builds the Vite app from `frontend/`.
+
+Set these Vercel environment variables:
+
+```bash
+VITE_API_BASE_URL=https://anti-india-api.onrender.com
+VITE_API_KEY=the-same-value-as-BOOTSTRAP_API_KEY
+```
+
+Then redeploy the Vercel project.

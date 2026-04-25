@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from functools import lru_cache
 
 
@@ -6,10 +7,17 @@ class Settings(BaseSettings):
     app_env: str = "development"
     secret_key: str = "changeme"
     api_key_salt: str = "changeme"
+    bootstrap_api_key: str = ""
 
     database_url: str = "postgresql+asyncpg://user:pass@localhost:5432/antiindia_db"
     redis_url: str = "redis://localhost:6379/0"
     es_url: str = "http://localhost:9200"
+    backend_cors_origins: str = (
+        "http://localhost:5173,"
+        "http://localhost:3000,"
+        "https://dashboard.yourdomain.com,"
+        "https://frontend-staging.onrender.com"
+    )
 
     twitter_bearer_token: str = ""
     youtube_api_key: str = ""
@@ -39,6 +47,24 @@ class Settings(BaseSettings):
     # Thresholds
     alert_threshold: int = 61
     critical_threshold: int = 81
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        if isinstance(value, str):
+            if value.startswith("postgres://"):
+                return value.replace("postgres://", "postgresql+asyncpg://", 1)
+            if value.startswith("postgresql://") and "+asyncpg" not in value:
+                return value.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return value
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [
+            origin.strip().rstrip("/")
+            for origin in self.backend_cors_origins.split(",")
+            if origin.strip()
+        ]
 
     class Config:
         env_file = ".env"
