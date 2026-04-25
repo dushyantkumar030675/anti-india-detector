@@ -2,20 +2,32 @@
   "installCommand": "cd frontend && npm install",
   "buildCommand": "cd frontend && npm run build",
   "outputDirectory": "frontend/dist",
-  "functions": {
-    "api/index.py": {
-      "maxDuration": 60
+  "experimentalServices": {
+    "frontend": {
+      "entrypoint": "frontend",
+      "routePrefix": "/",
+      "framework": "vite"
+    },
+    "api": {
+      "entrypoint": "api/index.py",
+      "routePrefix": "/api",
+      "framework": "fastapi",
+      "maxDuration": 60,
+      "memory": 1024,
+      "includeFiles": [
+        "backend/**"
+      ],
+      "excludeFiles": [
+        "backend/requirements.txt",
+        "backend/Dockerfile",
+        "backend/api/render.yaml",
+        "backend/api/render.staging.yaml",
+        "backend/api/deploy-staging.yml",
+        "backend/api/Health.jsx"
+      ]
     }
   },
   "rewrites": [
-    {
-      "source": "/health",
-      "destination": "/api/index.py"
-    },
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/index.py"
-    },
     {
       "source": "/(.*)",
       "destination": "/index.html"
