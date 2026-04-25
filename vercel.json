@@ -26,11 +26,5 @@
         "backend/api/Health.jsx"
       ]
     }
-  },
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
-  ]
+  }
 }
