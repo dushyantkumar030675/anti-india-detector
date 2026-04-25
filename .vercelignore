@@ -1,3 +1,9 @@
 nextjs-vercel-backend
 docker-compose.yml
 render.yaml
+backend/Dockerfile
+backend/requirements.txt
+backend/api/render.yaml
+backend/api/render.staging.yaml
+backend/api/deploy-staging.yml
+backend/api/Health.jsx
